@@ -7,5 +7,5 @@ edition = "2021" # 2024 пока нестабильная
 wgpu = "0.16"
 winit = "0.28"
 pollster = "0.3"
-bytemuck = { version = "1.10", features = ["derive"] }
-glam = "0.22"
+bytemuck = { version = "1.13", features = ["derive"] }
+glam = "0.23"

@@ -1,17 +1,15 @@
-use glam::{Vec3, Quat};
-use wgpu::util::DeviceExt;
 use winit::{
-    event::*,
+    event::{Event, WindowEvent, KeyboardInput, VirtualKeyCode, ElementState, MouseScrollDelta},
     event_loop::{ControlFlow, EventLoop},
     window::{WindowBuilder, Fullscreen},
 };
-
-const WIDTH: u32 = 1920;
-const HEIGHT: u32 = 1080;
+use wgpu::util::DeviceExt;
+use glam::Vec3;
+use std::{iter, collections::HashSet};
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Camera {
+struct CameraUniform {
     pos: [f32; 3],
     _pad1: f32,
     dir: [f32; 3],
@@ -20,18 +18,74 @@ struct Camera {
     _pad3: f32,
     fov: f32,
     aspect: f32,
-    _pad4: [f32; 2],
+    resolution: [f32; 2],
 }
 
-async fn run() {
+struct Camera {
+    pos: Vec3,
+    yaw: f32,
+    pitch: f32,
+    fov: f32,
+    aspect: f32,
+}
+
+impl Camera {
+    fn new(aspect: f32) -> Self {
+        Self {
+            pos: Vec3::new(0.0, 0.0, 4.0),
+            yaw: 0.0,
+            pitch: 0.0,
+            fov: 45f32.to_radians(),
+            aspect,
+        }
+    }
+
+    fn dir(&self) -> Vec3 {
+        Vec3::new(
+            self.yaw.cos() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.sin() * self.pitch.cos(),
+        )
+        .normalize()
+    }
+
+    fn up(&self) -> Vec3 {
+        Vec3::Y
+    }
+
+    fn build_uniform(&self, resolution: (f32, f32)) -> CameraUniform {
+        let dir = self.dir();
+        CameraUniform {
+            pos: self.pos.to_array(),
+            _pad1: 0.0,
+            dir: dir.to_array(),
+            _pad2: 0.0,
+            up: self.up().to_array(),
+            _pad3: 0.0,
+            fov: self.fov,
+            aspect: self.aspect,
+            resolution: [resolution.0, resolution.1],
+        }
+    }
+}
+
+fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Mandelbulb 3D")
-        .with_inner_size(winit::dpi::PhysicalSize::new(WIDTH, HEIGHT))
+        .with_title("Mandelbulb Fractal")
         .build(&event_loop)
         .unwrap();
 
-    let instance = wgpu::Instance::default();
+    pollster::block_on(run(event_loop, window));
+}
+
+async fn run(event_loop: EventLoop<()>, window: winit::window::Window) {
+    let size = window.inner_size();
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        dx12_shader_compiler: Default::default(),
+    });
     let surface = unsafe { instance.create_surface(&window) }.unwrap();
 
     let adapter = instance
@@ -46,7 +100,7 @@ async fn run() {
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
-                label: None,
+                label: Some("Device"),
                 features: wgpu::Features::empty(),
                 limits: wgpu::Limits::default(),
             },
@@ -55,43 +109,34 @@ async fn run() {
         .await
         .unwrap();
 
-    let surface_format = surface.get_capabilities(&adapter).formats[0];
-
-    // Изначальная конфигурация поверхности
+    let surface_caps = surface.get_capabilities(&adapter);
+    let surface_format = surface_caps.formats[0];
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
-        width: WIDTH,
-        height: HEIGHT,
+        width: size.width,
+        height: size.height,
         present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![],
     };
     surface.configure(&device, &config);
 
-    let mut camera = Camera {
-        pos: [0.0, 0.0, -3.0],
-        _pad1: 0.0,
-        dir: [0.0, 0.0, 1.0],
-        _pad2: 0.0,
-        up: [0.0, 1.0, 0.0],
-        _pad3: 0.0,
-        fov: std::f32::consts::FRAC_PI_4,
-        aspect: config.width as f32 / config.height as f32,
-        _pad4: [0.0; 2],
-    };
+
+    let mut camera = Camera::new(config.width as f32 / config.height as f32);
+    let mut camera_uniform = camera.build_uniform((config.width as f32, config.height as f32));
 
     let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Camera Buffer"),
-        contents: bytemuck::cast_slice(&[camera]),
+        contents: bytemuck::cast_slice(&[camera_uniform]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
     let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Camera Bind Group Layout"),
+        label: Some("camera_bind_group_layout"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -102,7 +147,7 @@ async fn run() {
     });
 
     let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Camera Bind Group"),
+        label: Some("camera_bind_group"),
         layout: &camera_bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
@@ -115,7 +160,7 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("mandelbulb.wgsl").into()),
     });
 
-    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Render Pipeline Layout"),
         bind_group_layouts: &[&camera_bind_group_layout],
         push_constant_ranges: &[],
@@ -123,7 +168,7 @@ async fn run() {
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
-        layout: Some(&render_pipeline_layout),
+        layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: "vs_main",
@@ -133,20 +178,27 @@ async fn run() {
             module: &shader,
             entry_point: "fs_main",
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: config.format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        primitive: wgpu::PrimitiveState::default(),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
     });
 
-    let mut dragging = false;
-    let mut last_cursor_pos = (0.0f32, 0.0f32);
-    let world_up = Vec3::Y;
+    let mut mouse_pressed = false;
+    let mut last_mouse_pos: Option<winit::dpi::PhysicalPosition<f64>> = None;
+    let zoom_speed = 0.5;
+    let mut fullscreen = false;
+
+    let mut pressed_keys = HashSet::new();
+    let move_speed = 0.05f32;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -154,101 +206,110 @@ async fn run() {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+
+                WindowEvent::Resized(new_size) => {
+                    config.width = new_size.width;
+                    config.height = new_size.height;
+                    camera.aspect = new_size.width as f32 / new_size.height as f32;
+                    surface.configure(&device, &config);
+                }
+
                 WindowEvent::KeyboardInput { input, .. } => {
                     if let Some(keycode) = input.virtual_keycode {
-                        let pressed = input.state == ElementState::Pressed;
-                        if pressed {
-                            // Обработка переключения полноэкранного режима
-                            if keycode == VirtualKeyCode::F11 {
-                                if window.fullscreen().is_some() {
-                                    window.set_fullscreen(None);
-                                    // Возвращаем windowed размер
-                                    config.width = WIDTH;
-                                    config.height = HEIGHT;
-                                } else {
-                                    let monitor = window.current_monitor();
-                                    if let Some(monitor) = monitor {
-                                        // Получаем первый доступный видео режим (можно улучшить выбор)
-                                        if let Some(video_mode) = monitor.video_modes().next() {
-                                            window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode.clone())));
-                                            config.width = video_mode.size().width;
-                                            config.height = video_mode.size().height;
+                        match input.state {
+                            ElementState::Pressed => {
+                                pressed_keys.insert(keycode);
+                                match keycode {
+                                    VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
+                                    VirtualKeyCode::F11 => {
+                                        if fullscreen {
+                                            window.set_fullscreen(None);
+                                            fullscreen = false;
                                         } else {
-                                            window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor.clone()))));
-                                            config.width = monitor.size().width;
-                                            config.height = monitor.size().height;
+                                            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                                            fullscreen = true;
                                         }
                                     }
+                                    _ => {}
                                 }
-                                camera.aspect = config.width as f32 / config.height as f32;
-                                surface.configure(&device, &config);
                             }
-
-                            // Передвижение камеры
-                            let mut pos = Vec3::from(camera.pos);
-                            let forward = Vec3::from(camera.dir).normalize();
-                            let up = Vec3::from(camera.up).normalize();
-                            let right = forward.cross(up).normalize();
-                            let speed = 0.2;
-                            match keycode {
-                                VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-                                VirtualKeyCode::W => pos += forward * speed,
-                                VirtualKeyCode::S => pos -= forward * speed,
-                                VirtualKeyCode::A => pos -= right * speed,
-                                VirtualKeyCode::D => pos += right * speed,
-                                VirtualKeyCode::Space => pos += up * speed,
-                                VirtualKeyCode::LShift => pos -= up * speed,
-                                _ => {}
+                            ElementState::Released => {
+                                pressed_keys.remove(&keycode);
                             }
-                            camera.pos = pos.into();
                         }
                     }
                 }
-                WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                    dragging = state == ElementState::Pressed;
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    let (x, y) = (position.x as f32, position.y as f32);
-                    if dragging {
-                        let dx = (x - last_cursor_pos.0) * 0.005;
-                        let dy = (y - last_cursor_pos.1) * 0.005;
 
-                        let dir = Vec3::from(camera.dir);
-                        let up = Vec3::from(camera.up);
-                        let right = dir.cross(up).normalize();
-
-                        let rot_y = Quat::from_axis_angle(up, -dx);
-                        let rot_x = Quat::from_axis_angle(right, -dy);
-                        let new_dir = (rot_y * rot_x) * dir;
-
-                        let forward = new_dir.normalize();
-
-                        let new_right = forward.cross(world_up).normalize();
-                        let new_up = new_right.cross(forward).normalize();
-
-                        camera.dir = forward.into();
-                        camera.up = new_up.into();
+                WindowEvent::MouseInput { state, button, .. } => {
+                    if button == winit::event::MouseButton::Left {
+                        mouse_pressed = state == ElementState::Pressed;
+                        if !mouse_pressed {
+                            last_mouse_pos = None;
+                        }
                     }
-                    last_cursor_pos = (x, y);
                 }
+
+                WindowEvent::CursorMoved { position, .. } => {
+                    if mouse_pressed {
+                        if let Some(last_pos) = last_mouse_pos {
+                            let dx = position.x - last_pos.x;
+                            let dy = position.y - last_pos.y;
+
+                            camera.yaw += (dx as f32) * 0.005;
+                            camera.pitch -= (dy as f32) * 0.005;
+                            camera.pitch = camera.pitch.clamp(-1.5, 1.5);
+                        }
+                        last_mouse_pos = Some(position);
+                    }
+                }
+
                 WindowEvent::MouseWheel { delta, .. } => {
-                    let mut pos = Vec3::from(camera.pos);
-                    let forward = Vec3::from(camera.dir).normalize();
                     let scroll_amount = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y,
-                        MouseScrollDelta::PixelDelta(p) => p.y as f32 * 0.1,
+                        MouseScrollDelta::LineDelta(_, y) => y as f32,
+                        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.1,
                     };
-                    pos += forward * scroll_amount * 0.5;
-                    camera.pos = pos.into();
+                    let zoom_vec = camera.dir() * scroll_amount * zoom_speed;
+                    camera.pos += zoom_vec;
                 }
+
                 _ => {}
             },
-            Event::MainEventsCleared => {
-                queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[camera]));
 
-                let frame = surface
-                    .get_current_texture()
-                    .expect("Failed to acquire next swap chain texture");
+            Event::MainEventsCleared => {
+                // Обработка клавиш WASD + QE
+                let forward = camera.dir();
+                let right = forward.cross(camera.up()).normalize();
+                let up = camera.up();
+
+                if pressed_keys.contains(&VirtualKeyCode::W) {
+                    camera.pos += forward * move_speed;
+                }
+                if pressed_keys.contains(&VirtualKeyCode::S) {
+                    camera.pos -= forward * move_speed;
+                }
+                if pressed_keys.contains(&VirtualKeyCode::A) {
+                    camera.pos -= right * move_speed;
+                }
+                if pressed_keys.contains(&VirtualKeyCode::D) {
+                    camera.pos += right * move_speed;
+                }
+                if pressed_keys.contains(&VirtualKeyCode::Q) {
+                    camera.pos -= up * move_speed;
+                }
+                if pressed_keys.contains(&VirtualKeyCode::E) {
+                    camera.pos += up * move_speed;
+                }
+
+                camera_uniform = camera.build_uniform((config.width as f32, config.height as f32));
+                queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+
+                let frame = match surface.get_current_texture() {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        surface.configure(&device, &config);
+                        surface.get_current_texture().expect("Failed to acquire next swap chain texture!")
+                    }
+                };
                 let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -256,7 +317,7 @@ async fn run() {
                 });
 
                 {
-                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Render Pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &view,
@@ -269,19 +330,16 @@ async fn run() {
                         depth_stencil_attachment: None,
                     });
 
-                    render_pass.set_pipeline(&render_pipeline);
-                    render_pass.set_bind_group(0, &camera_bind_group, &[]);
-                    render_pass.draw(0..6, 0..1);
+                    rpass.set_pipeline(&render_pipeline);
+                    rpass.set_bind_group(0, &camera_bind_group, &[]);
+                    rpass.draw(0..6, 0..1);
                 }
 
-                queue.submit(Some(encoder.finish()));
+                queue.submit(iter::once(encoder.finish()));
                 frame.present();
             }
+
             _ => {}
         }
     });
-}
-
-fn main() {
-    pollster::block_on(run());
 }

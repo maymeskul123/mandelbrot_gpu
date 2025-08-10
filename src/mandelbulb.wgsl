@@ -7,48 +7,48 @@ struct Camera {
     _pad3: f32,
     fov: f32,
     aspect: f32,
-    _pad4: vec2<f32>,
+    resolution: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 
-// Возвращает расстояние до множества Мандельбуля
+// Distance Estimation для Мандельбуля
 fn mandelbulbDE(p: vec3<f32>) -> f32 {
     var z = p;
     var dr = 1.0;
     var r = 0.0;
     let power = 8.0;
-    let max_iter = 10;
+    let max_iter = 10u;
 
-    for (var i = 0; i < max_iter; i = i + 1) {
+    for (var i = 0u; i < max_iter; i = i + 1u) {
         r = length(z);
         if (r > 2.0) {
             break;
         }
-
-        // преобразование в сферические координаты
         let theta = acos(z.z / r);
         let phi = atan2(z.y, z.x);
         dr = pow(r, power - 1.0) * power * dr + 1.0;
 
-        // масштабируем и поворачиваем точку
         let zr = pow(r, power);
         let new_theta = theta * power;
         let new_phi = phi * power;
 
-        // возвращаем в декартовы координаты
         z = zr * vec3<f32>(
             sin(new_theta) * cos(new_phi),
             sin(new_theta) * sin(new_phi),
             cos(new_theta)
         ) + p;
     }
-
     return 0.5 * log(r) * r / dr;
 }
 
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) frag_coord: vec2<f32>,
+};
+
 @vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
+fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
     var pos = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 1.0, -1.0),
@@ -57,25 +57,34 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
         vec2<f32>( 1.0, -1.0),
         vec2<f32>( 1.0,  1.0),
     );
-    return vec4<f32>(pos[idx], 0.0, 1.0);
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(pos[idx], 0.0, 1.0);
+    output.frag_coord = pos[idx];
+    return output;
 }
 
 @fragment
-fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
-    let uv = (frag_coord.xy / vec2<f32>(800.0, 600.0)) * 2.0 - vec2<f32>(1.0, 1.0);
+fn fs_main(@location(0) frag_coord: vec2<f32>) -> @location(0) vec4<f32> {
+    // Преобразуем из [-1..1] в [0..resolution]
+    let uv = (frag_coord + vec2<f32>(1.0, 1.0)) * 0.5 * camera.resolution;
+
+    // Далее нормируем для построения луча
+    let ndc = (uv / camera.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
+
     let forward = normalize(camera.dir);
     let right = normalize(cross(forward, camera.up));
     let up_vec = cross(right, forward);
 
     let fov_scale = tan(camera.fov * 0.5);
-    let ray_dir = normalize(forward + uv.x * camera.aspect * fov_scale * right + uv.y * fov_scale * up_vec);
+    let ray_dir = normalize(forward + ndc.x * camera.aspect * fov_scale * right + ndc.y * fov_scale * up_vec);
 
     var t = 0.0;
     let max_dist = 10.0;
     let min_dist = 0.001;
     var hit = false;
 
-    for (var i = 0; i < 100; i = i + 1) {
+    for (var i = 0u; i < 100u; i = i + 1u) {
         let p = camera.pos + ray_dir * t;
         let dist = mandelbulbDE(p);
         if (dist < min_dist) {
@@ -100,17 +109,13 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
 
         let diffuse = max(dot(normal, light_dir), 0.0);
 
-        // Цветовая градация от расстояния t с разными синусоидами для RGB
-        let color_from_dist = vec3<f32>(
-            0.5 + 0.5 * sin(t * 2.0),
-            0.5 + 0.5 * cos(t * 3.0),
-            0.5 + 0.5 * sin(t * 5.0 + 1.0)
-        );
-
-        let color = diffuse * color_from_dist;
+        // Цвет с вариациями, зависит от нормали и расстояния
+        let base_color = vec3<f32>(0.4, 0.6, 1.0);
+        let color = base_color * diffuse + vec3<f32>(0.1, 0.05, 0.0) * abs(normal.y);
 
         return vec4<f32>(color, 1.0);
     } else {
+        // Фон (чёрный)
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 }
