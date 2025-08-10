@@ -62,7 +62,7 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
-    let uv = (frag_coord.xy / vec2<f32>(800.0, 600.0)) * 2.0 - vec2<f32>(1.0, 1.0);
+    let uv = (frag_coord.xy / vec2<f32>(1920.0, 1080.0)) * 2.0 - vec2<f32>(1.0, 1.0);
     let forward = normalize(camera.dir);
     let right = normalize(cross(forward, camera.up));
     let up_vec = cross(right, forward);

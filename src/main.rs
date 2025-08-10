@@ -28,7 +28,6 @@ async fn run() {
     let window = WindowBuilder::new()
         .with_title("Mandelbulb 3D")
         .with_inner_size(winit::dpi::PhysicalSize::new(WIDTH, HEIGHT))
-        //.with_fullscreen(Some(Fullscreen::Borderless(None))) // если хочешь borderless fullscreen — раскомментируй
         .build(&event_loop)
         .unwrap();
 
@@ -58,7 +57,7 @@ async fn run() {
 
     let surface_format = surface.get_capabilities(&adapter).formats[0];
 
-    let config = wgpu::SurfaceConfiguration {
+    let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
         width: WIDTH,
@@ -69,27 +68,28 @@ async fn run() {
     };
     surface.configure(&device, &config);
 
-    // Camera setup
     let mut camera = Camera {
-        pos: [0.0, 0.0, -0.7], // очень близко к центру
+        pos: [0.0, 0.0, -0.7],
         _pad1: 0.0,
-        dir: [0.0, 0.0, 1.0],  // смотрим на центр
+        dir: [0.0, 0.0, 1.0],
         _pad2: 0.0,
         up: [0.0, 1.0, 0.0],
         _pad3: 0.0,
-        fov: std::f32::consts::FRAC_PI_4, // 30 градусов
+        fov: std::f32::consts::FRAC_PI_4,
         aspect: WIDTH as f32 / HEIGHT as f32,
         _pad4: [0.0; 2],
     };
+
     let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Camera Buffer"),
         contents: bytemuck::cast_slice(&[camera]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Camera Bind Group Layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
+
+    let camera_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Camera Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
@@ -98,9 +98,9 @@ async fn run() {
                     min_binding_size: None,
                 },
                 count: None,
-            },
-        ],
-    });
+            }],
+        });
+
     let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Camera Bind Group"),
         layout: &camera_bind_group_layout,
@@ -110,18 +110,18 @@ async fn run() {
         }],
     });
 
-    // Загрузка Mandelbulb WGSL
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Mandelbulb Shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("mandelbulb.wgsl").into()),
     });
 
-    // Fullscreen quad pipeline
-    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Render Pipeline Layout"),
-        bind_group_layouts: &[&camera_bind_group_layout],
-        push_constant_ranges: &[],
-    });
+    let render_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&camera_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
         layout: Some(&render_pipeline_layout),
@@ -145,7 +145,6 @@ async fn run() {
         multiview: None,
     });
 
-    // Переменные для управления камерой
     let mut dragging = false;
     let mut last_cursor_pos = (0.0f32, 0.0f32);
 
@@ -155,16 +154,21 @@ async fn run() {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+
                 WindowEvent::KeyboardInput { input, .. } => {
                     if let Some(keycode) = input.virtual_keycode {
                         let pressed = input.state == ElementState::Pressed;
+
                         if pressed {
+                            // Управление камерой WASD + Space + LShift
                             let forward = glam::Vec3::from(camera.dir).normalize();
-                            let right = glam::Vec3::from(camera.up).cross(forward).normalize();
+                            let right = forward.cross(glam::Vec3::from(camera.up)).normalize();
                             let up = glam::Vec3::from(camera.up).normalize();
                             let speed = 0.2;
+
                             match keycode {
                                 VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
+
                                 VirtualKeyCode::W => {
                                     let pos = glam::Vec3::from(camera.pos) + forward * speed;
                                     camera.pos = pos.into();
@@ -189,14 +193,43 @@ async fn run() {
                                     let pos = glam::Vec3::from(camera.pos) - up * speed;
                                     camera.pos = pos.into();
                                 }
+
+                                // Переключение fullscreen по F11
+                                VirtualKeyCode::F11 => {
+                                if window.fullscreen().is_some() {
+                                    window.set_fullscreen(None);
+                                    config.width = WIDTH;
+                                    config.height = HEIGHT;
+                                    surface.configure(&device, &config);
+                                    camera.aspect = WIDTH as f32 / HEIGHT as f32;
+                                } else {
+                                    if let Some(monitor) = window.current_monitor() {
+                                        if let Some(video_mode) = monitor.video_modes().next() {
+                                            let width = video_mode.size().width;
+                                            let height = video_mode.size().height;
+                                            window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode)));
+                                            config.width = width;
+                                            config.height = height;
+                                            surface.configure(&device, &config);
+                                            camera.aspect = config.width as f32 / config.height as f32;
+                                        } else {
+                                            window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
+                                    }
+        }
+    }
+}
+
+
                                 _ => {}
                             }
                         }
                     }
                 }
+
                 WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                     dragging = state == ElementState::Pressed;
                 }
+
                 WindowEvent::CursorMoved { position, .. } => {
                     let (x, y) = (position.x as f32, position.y as f32);
                     if dragging {
@@ -205,15 +238,17 @@ async fn run() {
                         let dir = glam::Vec3::from(camera.dir);
                         let up = glam::Vec3::from(camera.up);
                         let right = up.cross(dir).normalize();
-                        let rot_y = glam::Quat::from_axis_angle(up, -dx);
-                        let rot_x = glam::Quat::from_axis_angle(right, -dy);
+                        let rot_y = Quat::from_axis_angle(up, -dx);
+                        let rot_x = Quat::from_axis_angle(right, -dy);
                         let new_dir = (rot_y * rot_x) * dir;
                         camera.dir = new_dir.normalize().into();
                     }
                     last_cursor_pos = (x, y);
                 }
+
                 _ => {}
             },
+
             Event::MainEventsCleared => {
                 queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[camera]));
 
@@ -248,6 +283,7 @@ async fn run() {
                 queue.submit(Some(encoder.finish()));
                 frame.present();
             }
+
             _ => {}
         }
     });
