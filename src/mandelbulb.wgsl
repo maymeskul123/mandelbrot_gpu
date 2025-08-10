@@ -62,7 +62,7 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
-    let uv = (frag_coord.xy / vec2<f32>(1920.0, 1080.0)) * 2.0 - vec2<f32>(1.0, 1.0);
+    let uv = (frag_coord.xy / vec2<f32>(800.0, 600.0)) * 2.0 - vec2<f32>(1.0, 1.0);
     let forward = normalize(camera.dir);
     let right = normalize(cross(forward, camera.up));
     let up_vec = cross(right, forward);
@@ -89,11 +89,9 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     }
 
     if (hit) {
-        // Цвет зависит от расстояния для простого эффекта освещения
         let light_dir = normalize(vec3<f32>(-1.0, 1.0, -1.0));
         let p = camera.pos + ray_dir * t;
 
-        // Аппроксимация нормали через градиент
         let eps = 0.001;
         let nx = mandelbulbDE(p + vec3<f32>(eps, 0.0, 0.0)) - mandelbulbDE(p - vec3<f32>(eps, 0.0, 0.0));
         let ny = mandelbulbDE(p + vec3<f32>(0.0, eps, 0.0)) - mandelbulbDE(p - vec3<f32>(0.0, eps, 0.0));
@@ -101,7 +99,17 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
         let normal = normalize(vec3<f32>(nx, ny, nz));
 
         let diffuse = max(dot(normal, light_dir), 0.0);
-        return vec4<f32>(diffuse, diffuse * 0.5, diffuse * 0.2, 1.0);
+
+        // Цветовая градация от расстояния t с разными синусоидами для RGB
+        let color_from_dist = vec3<f32>(
+            0.5 + 0.5 * sin(t * 2.0),
+            0.5 + 0.5 * cos(t * 3.0),
+            0.5 + 0.5 * sin(t * 5.0 + 1.0)
+        );
+
+        let color = diffuse * color_from_dist;
+
+        return vec4<f32>(color, 1.0);
     } else {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }

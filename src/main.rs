@@ -57,6 +57,7 @@ async fn run() {
 
     let surface_format = surface.get_capabilities(&adapter).formats[0];
 
+    // Изначальная конфигурация поверхности
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
@@ -69,14 +70,14 @@ async fn run() {
     surface.configure(&device, &config);
 
     let mut camera = Camera {
-        pos: [0.0, 0.0, -0.7],
+        pos: [0.0, 0.0, -3.0],
         _pad1: 0.0,
         dir: [0.0, 0.0, 1.0],
         _pad2: 0.0,
         up: [0.0, 1.0, 0.0],
         _pad3: 0.0,
         fov: std::f32::consts::FRAC_PI_4,
-        aspect: WIDTH as f32 / HEIGHT as f32,
+        aspect: config.width as f32 / config.height as f32,
         _pad4: [0.0; 2],
     };
 
@@ -86,20 +87,19 @@ async fn run() {
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    let camera_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Camera Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+    let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Camera Bind Group Layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
 
     let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Camera Bind Group"),
@@ -115,12 +115,11 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("mandelbulb.wgsl").into()),
     });
 
-    let render_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Render Pipeline Layout"),
+        bind_group_layouts: &[&camera_bind_group_layout],
+        push_constant_ranges: &[],
+    });
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
@@ -147,6 +146,7 @@ async fn run() {
 
     let mut dragging = false;
     let mut last_cursor_pos = (0.0f32, 0.0f32);
+    let world_up = Vec3::Y;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -154,101 +154,95 @@ async fn run() {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-
                 WindowEvent::KeyboardInput { input, .. } => {
                     if let Some(keycode) = input.virtual_keycode {
                         let pressed = input.state == ElementState::Pressed;
-
                         if pressed {
-                            // Управление камерой WASD + Space + LShift
-                            let forward = glam::Vec3::from(camera.dir).normalize();
-                            let right = forward.cross(glam::Vec3::from(camera.up)).normalize();
-                            let up = glam::Vec3::from(camera.up).normalize();
-                            let speed = 0.2;
-
-                            match keycode {
-                                VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-
-                                VirtualKeyCode::W => {
-                                    let pos = glam::Vec3::from(camera.pos) + forward * speed;
-                                    camera.pos = pos.into();
-                                }
-                                VirtualKeyCode::S => {
-                                    let pos = glam::Vec3::from(camera.pos) - forward * speed;
-                                    camera.pos = pos.into();
-                                }
-                                VirtualKeyCode::A => {
-                                    let pos = glam::Vec3::from(camera.pos) - right * speed;
-                                    camera.pos = pos.into();
-                                }
-                                VirtualKeyCode::D => {
-                                    let pos = glam::Vec3::from(camera.pos) + right * speed;
-                                    camera.pos = pos.into();
-                                }
-                                VirtualKeyCode::Space => {
-                                    let pos = glam::Vec3::from(camera.pos) + up * speed;
-                                    camera.pos = pos.into();
-                                }
-                                VirtualKeyCode::LShift => {
-                                    let pos = glam::Vec3::from(camera.pos) - up * speed;
-                                    camera.pos = pos.into();
-                                }
-
-                                // Переключение fullscreen по F11
-                                VirtualKeyCode::F11 => {
+                            // Обработка переключения полноэкранного режима
+                            if keycode == VirtualKeyCode::F11 {
                                 if window.fullscreen().is_some() {
                                     window.set_fullscreen(None);
+                                    // Возвращаем windowed размер
                                     config.width = WIDTH;
                                     config.height = HEIGHT;
-                                    surface.configure(&device, &config);
-                                    camera.aspect = WIDTH as f32 / HEIGHT as f32;
                                 } else {
-                                    if let Some(monitor) = window.current_monitor() {
+                                    let monitor = window.current_monitor();
+                                    if let Some(monitor) = monitor {
+                                        // Получаем первый доступный видео режим (можно улучшить выбор)
                                         if let Some(video_mode) = monitor.video_modes().next() {
-                                            let width = video_mode.size().width;
-                                            let height = video_mode.size().height;
-                                            window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode)));
-                                            config.width = width;
-                                            config.height = height;
-                                            surface.configure(&device, &config);
-                                            camera.aspect = config.width as f32 / config.height as f32;
+                                            window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode.clone())));
+                                            config.width = video_mode.size().width;
+                                            config.height = video_mode.size().height;
                                         } else {
-                                            window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
+                                            window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor.clone()))));
+                                            config.width = monitor.size().width;
+                                            config.height = monitor.size().height;
+                                        }
                                     }
-        }
-    }
-}
+                                }
+                                camera.aspect = config.width as f32 / config.height as f32;
+                                surface.configure(&device, &config);
+                            }
 
-
+                            // Передвижение камеры
+                            let mut pos = Vec3::from(camera.pos);
+                            let forward = Vec3::from(camera.dir).normalize();
+                            let up = Vec3::from(camera.up).normalize();
+                            let right = forward.cross(up).normalize();
+                            let speed = 0.2;
+                            match keycode {
+                                VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
+                                VirtualKeyCode::W => pos += forward * speed,
+                                VirtualKeyCode::S => pos -= forward * speed,
+                                VirtualKeyCode::A => pos -= right * speed,
+                                VirtualKeyCode::D => pos += right * speed,
+                                VirtualKeyCode::Space => pos += up * speed,
+                                VirtualKeyCode::LShift => pos -= up * speed,
                                 _ => {}
                             }
+                            camera.pos = pos.into();
                         }
                     }
                 }
-
                 WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                     dragging = state == ElementState::Pressed;
                 }
-
                 WindowEvent::CursorMoved { position, .. } => {
                     let (x, y) = (position.x as f32, position.y as f32);
                     if dragging {
                         let dx = (x - last_cursor_pos.0) * 0.005;
                         let dy = (y - last_cursor_pos.1) * 0.005;
-                        let dir = glam::Vec3::from(camera.dir);
-                        let up = glam::Vec3::from(camera.up);
-                        let right = up.cross(dir).normalize();
+
+                        let dir = Vec3::from(camera.dir);
+                        let up = Vec3::from(camera.up);
+                        let right = dir.cross(up).normalize();
+
                         let rot_y = Quat::from_axis_angle(up, -dx);
                         let rot_x = Quat::from_axis_angle(right, -dy);
                         let new_dir = (rot_y * rot_x) * dir;
-                        camera.dir = new_dir.normalize().into();
+
+                        let forward = new_dir.normalize();
+
+                        let new_right = forward.cross(world_up).normalize();
+                        let new_up = new_right.cross(forward).normalize();
+
+                        camera.dir = forward.into();
+                        camera.up = new_up.into();
                     }
                     last_cursor_pos = (x, y);
                 }
-
+                WindowEvent::MouseWheel { delta, .. } => {
+                    let mut pos = Vec3::from(camera.pos);
+                    let forward = Vec3::from(camera.dir).normalize();
+                    let scroll_amount = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32 * 0.1,
+                    };
+                    pos += forward * scroll_amount * 0.5;
+                    camera.pos = pos.into();
+                }
                 _ => {}
             },
-
             Event::MainEventsCleared => {
                 queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[camera]));
 
@@ -283,7 +277,6 @@ async fn run() {
                 queue.submit(Some(encoder.finish()));
                 frame.present();
             }
-
             _ => {}
         }
     });
