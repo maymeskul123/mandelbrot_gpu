@@ -1,0 +1,11 @@
+[package]
+name = "mandelbrot_gpu"
+version = "0.1.0"
+edition = "2021" # 2024 пока нестабильная
+
+[dependencies]
+wgpu = "0.16"
+winit = "0.28"
+pollster = "0.3"
+bytemuck = { version = "1.10", features = ["derive"] }
+glam = "0.22"
